@@ -1,0 +1,10 @@
+# Python build and virtual environment artifacts
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+
+# Node modules and production frontend builds
+frontend/node_modules/
+frontend/dist/
+.DS_Store``
