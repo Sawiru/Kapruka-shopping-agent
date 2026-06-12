@@ -2,11 +2,17 @@ import os
 import httpx
 import json
 import time
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
 load_dotenv()
+
+app = Flask(__name__)
+# Enable CORS so your React frontend (port 5173) can talk to Flask (port 5000)
+CORS(app)
 
 # Initialize the Gemini Client
 client = genai.Client()
@@ -65,21 +71,11 @@ def kapruka_search_products(
     max_price: float = None, 
     in_stock_only: bool = True, 
     sort: str = None, 
-    limit: int = 10, 
+    limit: int = 5, 
     currency: str = "LKR"
 ) -> str:
     """
     Search the live Kapruka product catalog by keyword.
-    
-    Args:
-        q: The search keyword or product name (e.g., 'cake', 'flowers').
-        category: Optional category filter name.
-        min_price: Optional minimum price boundary.
-        max_price: Optional maximum price filter.
-        in_stock_only: Filter only items in stock. Defaults to True.
-        sort: Sort order profile.
-        limit: Max integer pagination length. Defaults to 10.
-        currency: Pricing currency scale. Defaults to 'LKR'.
     """
     global SESSION_ID
     print(f"\n[SYSTEM] Gemini invoked tool: kapruka_search_products for query: '{q}'...")
@@ -87,7 +83,6 @@ def kapruka_search_products(
     if not SESSION_ID:
         return "Error: Local backend failed to establish an active session handshake with Kapruka."
 
-    # Pre-populate all fields comprehensively to satisfy Kapruka's validation models
     arguments_payload = {
         "q": str(q),
         "category": category,
@@ -122,13 +117,10 @@ def kapruka_search_products(
             response = sync_client.post(KAPRUKA_MCP_URL, json=payload, headers=headers, timeout=12.0)
             raw_text = response.text
             
-            # PARSING STRATEGY: Safely isolate the data block out of the raw text stream chunk
             if "data: " in raw_text:
-                # Split at data: and grab everything following it
                 clean_json_str = raw_text.split("data: ", 1)[1].strip()
                 data = json.loads(clean_json_str)
             else:
-                # Fallback if a clean JSON payload arrived directly
                 data = response.json()
                 
             if "error" in data:
@@ -147,59 +139,56 @@ def kapruka_search_products(
         return f"Tool execution pipeline encountered an unexpected error: {str(e)}"
 
 
-def run_shopping_assistant():
-    print("Initializing Kapruka AI Assistant...")
-    
-    if not initialize_kapruka_session():
-        print("Initialization failed. Terminating engine setup.")
-        return
+# -------------------------------------------------------------
+# Core Server & Session Initialization
+# -------------------------------------------------------------
+print("Initializing Kapruka AI Assistant...")
+initialize_kapruka_session()
 
-    available_tools = [kapruka_search_products]
-    
-    system_prompt = (
-        "You are 'Kapruka Podi Aiyya', an energetic, warm, and highly resourceful personal "
-        "shopping concierge for Kapruka Sri Lanka. "
-        "You speak English, fluent Sinhala (සිංහල), or casual Tanglish based exactly on how the user types. "
-        "Use the tools provided to find actual live data. Do not make up product names or prices. "
-        "When summarizing products, present their names, prices, and IDs clearly so the user can see options. "
-        "Always suggest adding a card or flowers if they buy cakes."
-    )
-    
-    chat = client.chats.create(
-        model="gemini-3.5-flash",
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            tools=available_tools,
-            temperature=0.7
-        )
-    )
-    
-    print("\nPodi Aiyya is fully initialized and operational! (Type 'exit' to quit)")
-    
-    from google.genai.errors import APIError
+system_prompt = (
+    "You are 'Kapruka Podi Aiyya', an energetic, warm, and highly resourceful personal "
+    "shopping concierge for Kapruka Sri Lanka. "
+    "You speak English, fluent Sinhala (සිංහල), or casual Tanglish based exactly on how the user types. "
+    "Use the tools provided to find actual live data. Do not make up product names or prices. "
+    "When summarizing products, present their names, prices, and IDs clearly so the user can see options. "
+    "Always suggest adding a card or flowers if they buy cakes."
+)
 
-    while True:
-        user_message = input("\nYou: ")
-        if user_message.lower() == 'exit':
-            break
-            
-        try:
-            response = chat.send_message(user_message)
-            print(f"\nAgent: {response.text}")
-        except APIError as e:
-            if "503" in str(e) or "demand" in str(e).lower():
-                print("\n[SYSTEM] Gemini servers are highly occupied right now. Retrying in 2 seconds...")
-                time.sleep(2)
-                try:
-                    response = chat.send_message(user_message)
-                    print(f"\nAgent: {response.text}")
-                except Exception:
-                    print(f"\nAgent: Server load persists. Please try re-typing your prompt!")
-            else:
-                print(f"\n[SYSTEM] Gemini API Error: {str(e)}")
-        except Exception as general_err:
-            print(f"\n[SYSTEM] Unexpected Loop Exception: {str(general_err)}")
+# Instantiate a single, persistent global chat session context
+chat_session = client.chats.create(
+    model="gemini-3.5-flash",
+    config=types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        tools=[kapruka_search_products],
+        temperature=0.7
+    )
+)
+
+@app.route("/api/chat", methods=["POST"])
+def chat_endpoint():
+    """
+    Receives incoming prompts from your React frontend, feeds them to Gemini, 
+    and handles automatic tool execution behind the scenes.
+    """
+    data = request.json or {}
+    user_message = data.get("message", "").strip()
+    
+    if not user_message:
+        return jsonify({"error": "Empty message parameter"}), 400
+        
+    try:
+        # Pass the message into our ongoing persistent global session
+        response = chat_session.send_message(user_message)
+        return jsonify({"reply": response.text})
+        
+    except Exception as e:
+        print(f"[API ERROR] Chat generation loop fault: {str(e)}")
+        return jsonify({
+            "reply": "Ayiyoo, Podi Aiyya hit a quick system spike! Give me a second and ask again, macho."
+        })
 
 
 if __name__ == "__main__":
-    run_shopping_assistant()
+    # Listen universally on port 5000
+    print("\nPodi Aiyya is live on the local web socket channel!")
+    app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)

@@ -4,3 +4,4 @@ python-dotenv
 flask
 mcp
 httpx
+flask-cors
