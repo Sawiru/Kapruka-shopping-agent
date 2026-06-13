@@ -189,6 +189,6 @@ def chat_endpoint():
 
 
 if __name__ == "__main__":
-    # Listen universally on port 5000
+    # Listen universally on port 5001
     print("\nPodi Aiyya is live on the local web socket channel!")
     app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)
